@@ -290,6 +290,19 @@ class SessionManager:
 
         self.set("mode", "create")
 
+    # Edit manifest management
+    def is_editing_manifest(self) -> bool:
+        """Check if manifest is being edited"""
+        return self.get("edit_manifest", False)
+
+    def start_editing_manifest(self):
+        """Mark manifest as being edited"""
+        self.set("edit_manifest", True)
+
+    def stop_editing_manifest(self):
+        """Stop editing manifest"""
+        self.delete("edit_manifest")
+
     # Edit shipment management
     def is_editing_shipment(self, order_id: str) -> bool:
         """Check if a shipment is being edited"""
@@ -454,6 +467,20 @@ class DatabaseManager:
             WHERE MANIFEST_NO='{escape_sql(manifest_no)}'
         """
         return self.session.sql(query).to_pandas()
+
+    def update_manifest(self, manifest_no: str, trailer_no: str, seal_no: str,
+                       ship_date: str, carrier_code: str, pars_load: str):
+        """Update an existing manifest"""
+        query = f"""
+            UPDATE {self.tables['manifest']} SET
+                TRAILER_NUMBER = {sql_literal(trailer_no)},
+                SEAL = {sql_literal(seal_no)},
+                SHIP_DATE = {sql_literal(ship_date)},
+                OB_CARRIER_CODE = {sql_literal(carrier_code)},
+                PARS_LOAD_NUMBER = {sql_literal(pars_load)}
+            WHERE MANIFEST_NO = '{escape_sql(manifest_no)}'
+        """
+        self.session.sql(query).collect()
 
     def search_manifests(self, manifest_no: str = None, carrier_code: str = None,
                         date_from: str = None, date_to: str = None) -> pd.DataFrame:
@@ -839,23 +866,114 @@ class UIComponents:
 
     def _render_manifest_summary(self, info: dict):
         """Render manifest summary panel"""
-        st.subheader("Working on Manifest")
+        # Header with Edit button
+        col_title, col_btn = st.columns([4, 1])
+        with col_title:
+            st.subheader("Working on Manifest")
+        with col_btn:
+            if st.button("✏️ Edit Manifest", key="edit_manifest_btn"):
+                self.session.start_editing_manifest()
+                st.rerun()
 
-        col1, col2, col3 = st.columns(3)
+        # Show edit form if editing
+        if self.session.is_editing_manifest():
+            self._render_manifest_edit_form(info)
+        else:
+            # Display manifest info (read-only)
+            col1, col2, col3 = st.columns(3)
 
-        with col1:
-            st.write(f"**Manifest No:** {info['MANIFEST_NO']}")
-            st.write(f"**Trailer No:** {info['TRAILER_NUMBER']}")
+            with col1:
+                st.write(f"**Manifest No:** {info['MANIFEST_NO']}")
+                st.write(f"**Trailer No:** {info['TRAILER_NUMBER']}")
 
-        with col2:
-            st.write(f"**Seal:** {info['SEAL']}")
-            st.write(f"**Ship Date:** {info['SHIP_DATE']}")
+            with col2:
+                st.write(f"**Seal:** {info['SEAL']}")
+                st.write(f"**Ship Date:** {info['SHIP_DATE']}")
 
-        with col3:
-            st.write(f"**Outbound Carrier:** {info['OB_CARRIER_CODE']}")
-            st.write(f"**Load No:** {info['PARS_LOAD_NUMBER']}")
+            with col3:
+                st.write(f"**Outbound Carrier:** {info['OB_CARRIER_CODE']}")
+                st.write(f"**Load No:** {info['PARS_LOAD_NUMBER']}")
 
         st.divider()
+
+    def _render_manifest_edit_form(self, info: dict):
+        """Render manifest edit form"""
+        try:
+            st.markdown("---")
+            st.markdown("**✏️ Edit Manifest Details**")
+
+            manifest_no = info['MANIFEST_NO']
+
+            # Pre-fill with current values
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                # Manifest No is read-only (Primary Key)
+                st.text_input("Manifest Number (PK) *", value=manifest_no, disabled=True, key=f"em_no_{manifest_no}")
+                trailer_no = st.text_input("Trailer Number", value=info.get('TRAILER_NUMBER', ''), key=f"em_trlr_{manifest_no}")
+
+            with col2:
+                seal_no = st.text_input("Seal Number", value=info.get('SEAL', ''), key=f"em_seal_{manifest_no}")
+                # Parse ship date if it exists
+                ship_date_str = info.get('SHIP_DATE', '')
+                ship_date_value = None
+                if ship_date_str:
+                    try:
+                        from datetime import datetime
+                        ship_date_value = datetime.fromisoformat(ship_date_str).date()
+                    except:
+                        ship_date_value = None
+                ship_date = st.date_input("Ship Date", value=ship_date_value, key=f"em_date_{manifest_no}")
+
+            with col3:
+                carrier_code = st.text_input("Outbound Carrier Code", value=info.get('OB_CARRIER_CODE', ''), key=f"em_car_{manifest_no}")
+                pars_load = st.text_input("PARS / LOAD Number", value=info.get('PARS_LOAD_NUMBER', ''), key=f"em_load_{manifest_no}")
+
+            # Save/Cancel buttons
+            col_save, col_cancel = st.columns([1, 1])
+
+            with col_save:
+                if st.button("💾 Save Changes", key=f"save_manifest_{manifest_no}", type="primary"):
+                    try:
+                        # Update database
+                        self.db.update_manifest(
+                            manifest_no,
+                            trailer_no,
+                            seal_no,
+                            ship_date.isoformat() if ship_date else None,
+                            carrier_code,
+                            pars_load
+                        )
+
+                        # Update session state with new values
+                        self.session.set_manifest_info({
+                            "MANIFEST_NO": manifest_no,
+                            "TRAILER_NUMBER": trailer_no or "",
+                            "SEAL": seal_no or "",
+                            "SHIP_DATE": ship_date.isoformat() if ship_date else "",
+                            "OB_CARRIER_CODE": carrier_code or "",
+                            "PARS_LOAD_NUMBER": pars_load or ""
+                        })
+
+                        # Stop editing mode
+                        self.session.stop_editing_manifest()
+
+                        st.success(f"Manifest {manifest_no} updated successfully!")
+                        self.logger.log_info(f"Updated manifest: {manifest_no}")
+                        st.rerun()
+
+                    except Exception as e:
+                        self.logger.log_error(f"Failed to update manifest {manifest_no}", e)
+                        st.error(f"Failed to update manifest: {e}")
+
+            with col_cancel:
+                if st.button("❌ Cancel", key=f"cancel_manifest_{manifest_no}"):
+                    self.session.stop_editing_manifest()
+                    st.rerun()
+
+        except Exception as e:
+            self.logger.log_error(f"Error rendering manifest edit form", e)
+            st.error("Error rendering edit form")
 
     def _render_stop_form(self):
         """Render stop creation form"""
