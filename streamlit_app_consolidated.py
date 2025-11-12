@@ -303,6 +303,19 @@ class SessionManager:
         """Stop editing manifest"""
         self.delete("edit_manifest")
 
+    # Edit stop management
+    def is_editing_stop(self, drop_no: str) -> bool:
+        """Check if a stop is being edited"""
+        return self.get(f"edit_stop_{drop_no}", False)
+
+    def start_editing_stop(self, drop_no: str):
+        """Mark a stop as being edited"""
+        self.set(f"edit_stop_{drop_no}", True)
+
+    def stop_editing_stop(self, drop_no: str):
+        """Stop editing a stop"""
+        self.delete(f"edit_stop_{drop_no}")
+
     # Edit shipment management
     def is_editing_shipment(self, order_id: str) -> bool:
         """Check if a shipment is being edited"""
@@ -544,6 +557,17 @@ class DatabaseManager:
             ORDER BY STOP_ORDER
         """
         return self.session.sql(query).to_pandas()
+
+    def update_stop(self, drop_no: str, stop_order: int, code_destination: str, shipvia: str):
+        """Update an existing stop"""
+        query = f"""
+            UPDATE {self.tables['manifest_dest']} SET
+                STOP_ORDER = {int(stop_order)},
+                CODE_DESTINATION = {sql_literal(code_destination)},
+                SHIPVIA = {sql_literal(shipvia)}
+            WHERE DROP_NO = '{escape_sql(drop_no)}'
+        """
+        self.session.sql(query).collect()
 
     def delete_stop(self, drop_no: str):
         """Delete a stop and cascade delete related records"""
@@ -975,6 +999,63 @@ class UIComponents:
             self.logger.log_error(f"Error rendering manifest edit form", e)
             st.error("Error rendering edit form")
 
+    def _render_stop_edit_form(self, drop_no: str, stop_data: pd.Series):
+        """Render stop edit form"""
+        try:
+            st.markdown("---")
+            st.markdown(f"**✏️ Edit Stop {drop_no}**")
+
+            # Pre-fill with current values
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                stop_order = st.number_input(
+                    "Stop Order",
+                    min_value=1,
+                    value=int(stop_data.get('STOP_ORDER', 1)),
+                    step=1,
+                    key=f"es_order_{drop_no}"
+                )
+
+            with col2:
+                code_destination = st.text_input(
+                    "Code Destination",
+                    value=stop_data.get('CODE_DESTINATION', ''),
+                    key=f"es_dest_{drop_no}"
+                )
+
+            with col3:
+                shipvia = st.text_input(
+                    "Ship Via",
+                    value=stop_data.get('SHIPVIA', ''),
+                    key=f"es_via_{drop_no}"
+                )
+
+            # Save/Cancel buttons
+            col_save, col_cancel = st.columns([1, 1])
+
+            with col_save:
+                if st.button("💾 Save Changes", key=f"save_stop_{drop_no}", type="primary"):
+                    try:
+                        self.db.update_stop(drop_no, stop_order, code_destination, shipvia)
+                        self.session.stop_editing_stop(drop_no)
+                        st.success(f"Stop {drop_no} updated successfully!")
+                        self.logger.log_info(f"Updated stop: {drop_no}")
+                        st.rerun()
+
+                    except Exception as e:
+                        self.logger.log_error(f"Failed to update stop {drop_no}", e)
+                        st.error(f"Failed to update stop: {e}")
+
+            with col_cancel:
+                if st.button("❌ Cancel", key=f"cancel_stop_{drop_no}"):
+                    self.session.stop_editing_stop(drop_no)
+                    st.rerun()
+
+        except Exception as e:
+            self.logger.log_error(f"Error rendering stop edit form for {drop_no}", e)
+            st.error("Error rendering edit form")
+
     def _render_stop_form(self):
         """Render stop creation form"""
         st.subheader("➕ Add Stop")
@@ -1037,13 +1118,59 @@ class UIComponents:
             st.error("Error rendering shipment section. Check logs.")
 
     def _display_shipments_table(self, drop_no: str):
-        """Display existing shipments for a stop"""
+        """Display existing shipments for a stop with inline edit buttons"""
         try:
             shipments = self.db.get_shipments_for_drop(drop_no)
             if not shipments.empty:
-                # Hide ORDER_ID column
-                display_df = shipments.drop(columns=["ORDER_ID"]).reset_index(drop=True)
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                st.markdown("**Current Shipments:**")
+
+                # Display header row
+                col_edit, col_vendor, col_sid, col_bol, col_boxes, col_weight = st.columns([0.5, 1.5, 1.5, 1.5, 1, 1])
+                with col_edit:
+                    st.markdown("**Edit**")
+                with col_vendor:
+                    st.markdown("**Vendor**")
+                with col_sid:
+                    st.markdown("**SID**")
+                with col_bol:
+                    st.markdown("**BOL**")
+                with col_boxes:
+                    st.markdown("**Boxes**")
+                with col_weight:
+                    st.markdown("**Weight**")
+
+                # Display each shipment row with edit button
+                for _, row in shipments.iterrows():
+                    order_id = row["ORDER_ID"]
+
+                    col_edit, col_vendor, col_sid, col_bol, col_boxes, col_weight = st.columns([0.5, 1.5, 1.5, 1.5, 1, 1])
+
+                    with col_edit:
+                        if st.button("✏️", key=f"edit_ship_table_{order_id}"):
+                            self.session.start_editing_shipment(order_id)
+                            st.rerun()
+
+                    with col_vendor:
+                        st.write(row.get("Vendor Code", "") or "N/A")
+
+                    with col_sid:
+                        st.write(row.get("SID", "") or "N/A")
+
+                    with col_bol:
+                        st.write(row.get("BOL Number", "") or "N/A")
+
+                    with col_boxes:
+                        st.write(row.get("Boxes", 0))
+
+                    with col_weight:
+                        st.write(row.get("Weight", 0.0))
+
+                    # Show edit form inline if editing this shipment
+                    if self.session.is_editing_shipment(order_id):
+                        self._render_shipment_edit_form(order_id, row)
+
+                st.markdown("---")
+
         except Exception as e:
             self.logger.log_error(f"Failed to display shipments for drop {drop_no}", e)
             st.warning("Could not load shipments")
@@ -1486,14 +1613,35 @@ class UIComponents:
                 st.info("No stops added yet.")
                 return
 
-            # Display stops table (hide DROP_NO)
-            display_df = stops.rename(columns={
-                "STOP_ORDER": "Stop Order",
-                "CODE_DESTINATION": "Code Destination",
-                "SHIPVIA": "Ship Via"
-            }).drop(columns=["DROP_NO"]).reset_index(drop=True)
+            # Display stops table with inline edit buttons
+            st.markdown("**Stops Table:**")
 
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            # Render each stop row with edit button
+            for _, stop_row in stops.iterrows():
+                drop_no = stop_row["DROP_NO"]
+
+                # Row with Edit button and stop info
+                col_edit, col_order, col_dest, col_via = st.columns([0.5, 1, 2, 2])
+
+                with col_edit:
+                    if st.button("✏️", key=f"edit_stop_btn_{drop_no}"):
+                        self.session.start_editing_stop(drop_no)
+                        st.rerun()
+
+                with col_order:
+                    st.write(f"**{int(stop_row['STOP_ORDER'])}**")
+
+                with col_dest:
+                    st.write(stop_row['CODE_DESTINATION'] or 'N/A')
+
+                with col_via:
+                    st.write(stop_row['SHIPVIA'] or 'N/A')
+
+                # Show edit form if editing this stop
+                if self.session.is_editing_stop(drop_no):
+                    self._render_stop_edit_form(drop_no, stop_row)
+
+            st.markdown("---")
 
             # Expandable details for each stop
             for _, stop_row in stops.iterrows():
