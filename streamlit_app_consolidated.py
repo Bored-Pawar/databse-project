@@ -290,6 +290,45 @@ class SessionManager:
 
         self.set("mode", "create")
 
+    # Edit manifest management
+    def is_editing_manifest(self) -> bool:
+        """Check if manifest is being edited"""
+        return self.get("edit_manifest", False)
+
+    def start_editing_manifest(self):
+        """Mark manifest as being edited"""
+        self.set("edit_manifest", True)
+
+    def stop_editing_manifest(self):
+        """Stop editing manifest"""
+        self.delete("edit_manifest")
+
+    # Edit stop management
+    def is_editing_stop(self, drop_no: str) -> bool:
+        """Check if a stop is being edited"""
+        return self.get(f"edit_stop_{drop_no}", False)
+
+    def start_editing_stop(self, drop_no: str):
+        """Mark a stop as being edited"""
+        self.set(f"edit_stop_{drop_no}", True)
+
+    def stop_editing_stop(self, drop_no: str):
+        """Stop editing a stop"""
+        self.delete(f"edit_stop_{drop_no}")
+
+    # Edit shipment management
+    def is_editing_shipment(self, order_id: str) -> bool:
+        """Check if a shipment is being edited"""
+        return self.get(f"edit_shipment_{order_id}", False)
+
+    def start_editing_shipment(self, order_id: str):
+        """Mark a shipment as being edited"""
+        self.set(f"edit_shipment_{order_id}", True)
+
+    def stop_editing_shipment(self, order_id: str):
+        """Stop editing a shipment"""
+        self.delete(f"edit_shipment_{order_id}")
+
     # SID rows management
     def get_sid_rows(self, order_id: str) -> list:
         """Get SID input rows for an order"""
@@ -442,6 +481,20 @@ class DatabaseManager:
         """
         return self.session.sql(query).to_pandas()
 
+    def update_manifest(self, manifest_no: str, trailer_no: str, seal_no: str,
+                       ship_date: str, carrier_code: str, pars_load: str):
+        """Update an existing manifest"""
+        query = f"""
+            UPDATE {self.tables['manifest']} SET
+                TRAILER_NUMBER = {sql_literal(trailer_no)},
+                SEAL = {sql_literal(seal_no)},
+                SHIP_DATE = {sql_literal(ship_date)},
+                OB_CARRIER_CODE = {sql_literal(carrier_code)},
+                PARS_LOAD_NUMBER = {sql_literal(pars_load)}
+            WHERE MANIFEST_NO = '{escape_sql(manifest_no)}'
+        """
+        self.session.sql(query).collect()
+
     def search_manifests(self, manifest_no: str = None, carrier_code: str = None,
                         date_from: str = None, date_to: str = None) -> pd.DataFrame:
         """Search for manifests with filters"""
@@ -504,6 +557,17 @@ class DatabaseManager:
             ORDER BY STOP_ORDER
         """
         return self.session.sql(query).to_pandas()
+
+    def update_stop(self, drop_no: str, stop_order: int, code_destination: str, shipvia: str):
+        """Update an existing stop"""
+        query = f"""
+            UPDATE {self.tables['manifest_dest']} SET
+                STOP_ORDER = {int(stop_order)},
+                CODE_DESTINATION = {sql_literal(code_destination)},
+                SHIPVIA = {sql_literal(shipvia)}
+            WHERE DROP_NO = '{escape_sql(drop_no)}'
+        """
+        self.session.sql(query).collect()
 
     def delete_stop(self, drop_no: str):
         """Delete a stop and cascade delete related records"""
@@ -580,6 +644,30 @@ class DatabaseManager:
         self.session.sql(f"DELETE FROM {self.tables['sid']} WHERE ORDER_ID='{escape_sql(order_id)}'").collect()
         self.session.sql(f"DELETE FROM {self.tables['osd']} WHERE ORDER_ID='{escape_sql(order_id)}'").collect()
         self.session.sql(f"DELETE FROM {self.tables['shipment']} WHERE ORDER_ID='{escape_sql(order_id)}'").collect()
+
+    def update_shipment(self, order_id: str, vendorcode: str, sid: str, bol: str,
+                       pro: str, po: str, ib_car: str, skids: int, boxes: int,
+                       weight: float, value_amt: float, notes: str,
+                       hazmat: bool, haz_desc: str):
+        """Update an existing shipment"""
+        query = f"""
+            UPDATE {self.tables['shipment']} SET
+                VENDORCODE = {sql_literal(vendorcode)},
+                SID = {sql_literal(sid)},
+                BOL_NO = {sql_literal(bol)},
+                PRO_NO = {sql_literal(pro)},
+                PO_NUMBER = {sql_literal(po)},
+                IB_CARRIER_CODE = {sql_literal(ib_car)},
+                SKIDS = {sql_literal(skids)},
+                BOXES = {sql_literal(boxes)},
+                WEIGHT_LB = {sql_literal(weight)},
+                DECLARED_VALUE = {sql_literal(value_amt)},
+                NOTES = {sql_literal(notes)},
+                HAZMAT = {sql_literal(bool(hazmat))},
+                HAZMAT_DESCRIPTION = {sql_literal(haz_desc)}
+            WHERE ORDER_ID = '{escape_sql(order_id)}'
+        """
+        self.session.sql(query).collect()
 
     # ==================== SID Operations ====================
 
@@ -802,23 +890,171 @@ class UIComponents:
 
     def _render_manifest_summary(self, info: dict):
         """Render manifest summary panel"""
-        st.subheader("Working on Manifest")
+        # Header with Edit button
+        col_title, col_btn = st.columns([4, 1])
+        with col_title:
+            st.subheader("Working on Manifest")
+        with col_btn:
+            if st.button("✏️ Edit Manifest", key="edit_manifest_btn"):
+                self.session.start_editing_manifest()
+                st.rerun()
 
-        col1, col2, col3 = st.columns(3)
+        # Show edit form if editing
+        if self.session.is_editing_manifest():
+            self._render_manifest_edit_form(info)
+        else:
+            # Display manifest info (read-only)
+            col1, col2, col3 = st.columns(3)
 
-        with col1:
-            st.write(f"**Manifest No:** {info['MANIFEST_NO']}")
-            st.write(f"**Trailer No:** {info['TRAILER_NUMBER']}")
+            with col1:
+                st.write(f"**Manifest No:** {info['MANIFEST_NO']}")
+                st.write(f"**Trailer No:** {info['TRAILER_NUMBER']}")
 
-        with col2:
-            st.write(f"**Seal:** {info['SEAL']}")
-            st.write(f"**Ship Date:** {info['SHIP_DATE']}")
+            with col2:
+                st.write(f"**Seal:** {info['SEAL']}")
+                st.write(f"**Ship Date:** {info['SHIP_DATE']}")
 
-        with col3:
-            st.write(f"**Outbound Carrier:** {info['OB_CARRIER_CODE']}")
-            st.write(f"**Load No:** {info['PARS_LOAD_NUMBER']}")
+            with col3:
+                st.write(f"**Outbound Carrier:** {info['OB_CARRIER_CODE']}")
+                st.write(f"**Load No:** {info['PARS_LOAD_NUMBER']}")
 
         st.divider()
+
+    def _render_manifest_edit_form(self, info: dict):
+        """Render manifest edit form"""
+        try:
+            st.markdown("---")
+            st.markdown("**✏️ Edit Manifest Details**")
+
+            manifest_no = info['MANIFEST_NO']
+
+            # Pre-fill with current values
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                # Manifest No is read-only (Primary Key)
+                st.text_input("Manifest Number (PK) *", value=manifest_no, disabled=True, key=f"em_no_{manifest_no}")
+                trailer_no = st.text_input("Trailer Number", value=info.get('TRAILER_NUMBER', ''), key=f"em_trlr_{manifest_no}")
+
+            with col2:
+                seal_no = st.text_input("Seal Number", value=info.get('SEAL', ''), key=f"em_seal_{manifest_no}")
+                # Parse ship date if it exists
+                ship_date_str = info.get('SHIP_DATE', '')
+                ship_date_value = None
+                if ship_date_str:
+                    try:
+                        from datetime import datetime
+                        ship_date_value = datetime.fromisoformat(ship_date_str).date()
+                    except:
+                        ship_date_value = None
+                ship_date = st.date_input("Ship Date", value=ship_date_value, key=f"em_date_{manifest_no}")
+
+            with col3:
+                carrier_code = st.text_input("Outbound Carrier Code", value=info.get('OB_CARRIER_CODE', ''), key=f"em_car_{manifest_no}")
+                pars_load = st.text_input("PARS / LOAD Number", value=info.get('PARS_LOAD_NUMBER', ''), key=f"em_load_{manifest_no}")
+
+            # Save/Cancel buttons
+            col_save, col_cancel = st.columns([1, 1])
+
+            with col_save:
+                if st.button("💾 Save Changes", key=f"save_manifest_{manifest_no}", type="primary"):
+                    try:
+                        # Update database
+                        self.db.update_manifest(
+                            manifest_no,
+                            trailer_no,
+                            seal_no,
+                            ship_date.isoformat() if ship_date else None,
+                            carrier_code,
+                            pars_load
+                        )
+
+                        # Update session state with new values
+                        self.session.set_manifest_info({
+                            "MANIFEST_NO": manifest_no,
+                            "TRAILER_NUMBER": trailer_no or "",
+                            "SEAL": seal_no or "",
+                            "SHIP_DATE": ship_date.isoformat() if ship_date else "",
+                            "OB_CARRIER_CODE": carrier_code or "",
+                            "PARS_LOAD_NUMBER": pars_load or ""
+                        })
+
+                        # Stop editing mode
+                        self.session.stop_editing_manifest()
+
+                        st.success(f"Manifest {manifest_no} updated successfully!")
+                        self.logger.log_info(f"Updated manifest: {manifest_no}")
+                        st.rerun()
+
+                    except Exception as e:
+                        self.logger.log_error(f"Failed to update manifest {manifest_no}", e)
+                        st.error(f"Failed to update manifest: {e}")
+
+            with col_cancel:
+                if st.button("❌ Cancel", key=f"cancel_manifest_{manifest_no}"):
+                    self.session.stop_editing_manifest()
+                    st.rerun()
+
+        except Exception as e:
+            self.logger.log_error(f"Error rendering manifest edit form", e)
+            st.error("Error rendering edit form")
+
+    def _render_stop_edit_form(self, drop_no: str, stop_data: pd.Series):
+        """Render stop edit form"""
+        try:
+            st.markdown("---")
+            st.markdown(f"**✏️ Edit Stop {drop_no}**")
+
+            # Pre-fill with current values
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                stop_order = st.number_input(
+                    "Stop Order",
+                    min_value=1,
+                    value=int(stop_data.get('STOP_ORDER', 1)),
+                    step=1,
+                    key=f"es_order_{drop_no}"
+                )
+
+            with col2:
+                code_destination = st.text_input(
+                    "Code Destination",
+                    value=stop_data.get('CODE_DESTINATION', ''),
+                    key=f"es_dest_{drop_no}"
+                )
+
+            with col3:
+                shipvia = st.text_input(
+                    "Ship Via",
+                    value=stop_data.get('SHIPVIA', ''),
+                    key=f"es_via_{drop_no}"
+                )
+
+            # Save/Cancel buttons
+            col_save, col_cancel = st.columns([1, 1])
+
+            with col_save:
+                if st.button("💾 Save Changes", key=f"save_stop_{drop_no}", type="primary"):
+                    try:
+                        self.db.update_stop(drop_no, stop_order, code_destination, shipvia)
+                        self.session.stop_editing_stop(drop_no)
+                        st.success(f"Stop {drop_no} updated successfully!")
+                        self.logger.log_info(f"Updated stop: {drop_no}")
+                        st.rerun()
+
+                    except Exception as e:
+                        self.logger.log_error(f"Failed to update stop {drop_no}", e)
+                        st.error(f"Failed to update stop: {e}")
+
+            with col_cancel:
+                if st.button("❌ Cancel", key=f"cancel_stop_{drop_no}"):
+                    self.session.stop_editing_stop(drop_no)
+                    st.rerun()
+
+        except Exception as e:
+            self.logger.log_error(f"Error rendering stop edit form for {drop_no}", e)
+            st.error("Error rendering edit form")
 
     def _render_stop_form(self):
         """Render stop creation form"""
@@ -882,13 +1118,59 @@ class UIComponents:
             st.error("Error rendering shipment section. Check logs.")
 
     def _display_shipments_table(self, drop_no: str):
-        """Display existing shipments for a stop"""
+        """Display existing shipments for a stop with inline edit buttons"""
         try:
             shipments = self.db.get_shipments_for_drop(drop_no)
             if not shipments.empty:
-                # Hide ORDER_ID column
-                display_df = shipments.drop(columns=["ORDER_ID"]).reset_index(drop=True)
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                st.markdown("**Current Shipments:**")
+
+                # Display header row
+                col_edit, col_vendor, col_sid, col_bol, col_boxes, col_weight = st.columns([0.5, 1.5, 1.5, 1.5, 1, 1])
+                with col_edit:
+                    st.markdown("**Edit**")
+                with col_vendor:
+                    st.markdown("**Vendor**")
+                with col_sid:
+                    st.markdown("**SID**")
+                with col_bol:
+                    st.markdown("**BOL**")
+                with col_boxes:
+                    st.markdown("**Boxes**")
+                with col_weight:
+                    st.markdown("**Weight**")
+
+                # Display each shipment row with edit button
+                for _, row in shipments.iterrows():
+                    order_id = row["ORDER_ID"]
+
+                    col_edit, col_vendor, col_sid, col_bol, col_boxes, col_weight = st.columns([0.5, 1.5, 1.5, 1.5, 1, 1])
+
+                    with col_edit:
+                        if st.button("✏️", key=f"edit_ship_table_{order_id}"):
+                            self.session.start_editing_shipment(order_id)
+                            st.rerun()
+
+                    with col_vendor:
+                        st.write(row.get("Vendor Code", "") or "N/A")
+
+                    with col_sid:
+                        st.write(row.get("SID", "") or "N/A")
+
+                    with col_bol:
+                        st.write(row.get("BOL Number", "") or "N/A")
+
+                    with col_boxes:
+                        st.write(row.get("Boxes", 0))
+
+                    with col_weight:
+                        st.write(row.get("Weight", 0.0))
+
+                    # Show edit form inline if editing this shipment
+                    if self.session.is_editing_shipment(order_id):
+                        self._render_shipment_edit_form(order_id, row)
+
+                st.markdown("---")
+
         except Exception as e:
             self.logger.log_error(f"Failed to display shipments for drop {drop_no}", e)
             st.warning("Could not load shipments")
@@ -943,6 +1225,75 @@ class UIComponents:
                 self.logger.log_error(f"Failed to add shipment to drop {drop_no}", e)
                 st.error(f"Failed to add shipment: {e}")
 
+    def _render_shipment_edit_form(self, order_id: str, row: pd.Series):
+        """Render edit form for a shipment"""
+        try:
+            st.markdown("---")
+            st.markdown("**✏️ Edit Shipment Details**")
+
+            # Pre-fill with current values
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                vendorcode = st.text_input("Vendor Code", value=row.get("Vendor Code", ""), key=f"e_vendor_{order_id}")
+                sid = st.text_input("SID", value=row.get("SID", ""), key=f"e_sid_{order_id}")
+                bol = st.text_input("BOL Number", value=row.get("BOL Number", ""), key=f"e_bol_{order_id}")
+
+            with col2:
+                pro = st.text_input("PRO Number", value=row.get("PRO Number", ""), key=f"e_pro_{order_id}")
+                po = st.text_input("PO Number", value=row.get("PO Number", ""), key=f"e_po_{order_id}")
+                ib_car = st.text_input("Inbound Carrier Code", value=row.get("Inbound Carrier Code", ""), key=f"e_ibcar_{order_id}")
+
+            with col3:
+                skids = st.number_input("Skids", min_value=0, value=int(row.get("Skids", 0)), step=1, key=f"e_skids_{order_id}")
+                boxes = st.number_input("Boxes", min_value=0, value=int(row.get("Boxes", 0)), step=1, key=f"e_boxes_{order_id}")
+                weight = st.number_input("Weight", min_value=0.0, value=float(row.get("Weight", 0.0)), step=0.1, key=f"e_weight_{order_id}")
+
+            col4, col5, col6 = st.columns(3)
+
+            with col4:
+                value_amt = st.number_input("Value", min_value=0.0, value=float(row.get("Value", 0.0)), step=0.01, key=f"e_value_{order_id}")
+
+            with col5:
+                notes = st.text_input("Notes (optional)", value=row.get("Notes", ""), key=f"e_notes_{order_id}")
+
+            with col6:
+                hazmat = st.checkbox("Hazmat", value=bool(row.get("Hazmat", False)), key=f"e_haz_{order_id}")
+
+            # Get current hazmat description, find index
+            current_haz_desc = row.get("Hazmat Description", "")
+            haz_idx = HAZMAT_OPTIONS.index(current_haz_desc) if current_haz_desc in HAZMAT_OPTIONS else 0
+            haz_desc = st.selectbox("Hazmat Description", HAZMAT_OPTIONS, index=haz_idx, key=f"e_haz_desc_{order_id}")
+
+            # Save/Cancel buttons
+            col_save, col_cancel = st.columns([1, 1])
+
+            with col_save:
+                if st.button("💾 Save Changes", key=f"save_edit_{order_id}", type="primary"):
+                    try:
+                        self.db.update_shipment(
+                            order_id, vendorcode, sid, bol, pro, po, ib_car,
+                            skids, boxes, weight, value_amt, notes, hazmat, haz_desc
+                        )
+
+                        self.session.stop_editing_shipment(order_id)
+                        st.success("Shipment updated successfully!")
+                        self.logger.log_info(f"Updated shipment {order_id}")
+                        st.rerun()
+
+                    except Exception as e:
+                        self.logger.log_error(f"Failed to update shipment {order_id}", e)
+                        st.error(f"Failed to update shipment: {e}")
+
+            with col_cancel:
+                if st.button("❌ Cancel", key=f"cancel_edit_{order_id}"):
+                    self.session.stop_editing_shipment(order_id)
+                    st.rerun()
+
+        except Exception as e:
+            self.logger.log_error(f"Error rendering edit form for {order_id}", e)
+            st.error("Error rendering edit form")
+
     def _render_shipment_management(self, drop_no: str):
         """Render management interface for existing shipments"""
         try:
@@ -972,23 +1323,29 @@ class UIComponents:
                 st.dataframe(display_row, use_container_width=True, hide_index=True)
 
                 # Action buttons
-                col1, col2, col3 = st.columns([1, 1, 3])
+                col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
 
                 with col1:
+                    if st.button("✏️ Edit", key=f"edit_{order_id}"):
+                        self.session.start_editing_shipment(order_id)
+                        st.rerun()
+
+                with col2:
                     if st.button("Multiple SID/PO", key=f"multi_{order_id}"):
                         self.session.open_panel(f"sids_{order_id}")
                         st.rerun()
 
-                with col2:
+                with col3:
                     if st.button("OSD", key=f"osd_{order_id}"):
                         self.session.open_panel(f"osd_{order_id}")
                         st.rerun()
 
+                # Show edit form if editing
+                if self.session.is_editing_shipment(order_id):
+                    self._render_shipment_edit_form(order_id, row)
+
                 # Show current SIDs
                 self._display_current_sids(order_id)
-
-                # Primary SID selector
-                self._render_primary_sid_selector(order_id)
 
                 # SID editor panel
                 if self.session.is_panel_open(f"sids_{order_id}"):
@@ -1017,14 +1374,26 @@ class UIComponents:
     # ==================== SID Management ====================
 
     def _display_current_sids(self, order_id: str):
-        """Display current SIDs for an order"""
+        """Display current SIDs for an order - Primary first, then additional SIDs"""
         try:
             st.caption("All SIDs for this order:")
+
+            # Get the primary SID from SHIPMENT_DETAIL
+            primary_sid = self.db.get_primary_sid(order_id)
+
+            # Get additional SIDs from SID table
             sid_df = self.db.get_sids_for_order(order_id)
 
-            if sid_df.empty:
-                st.write("— none —")
-            else:
+            # Display primary SID first (from main shipment entry)
+            if primary_sid:
+                col1, col2 = st.columns([6, 1])
+                with col1:
+                    st.write(f"⭐ **{primary_sid}** (Primary - from main entry)")
+                with col2:
+                    st.write("")  # No delete button for primary SID
+
+            # Display additional SIDs from SID table
+            if not sid_df.empty:
                 for _, sid_row in sid_df.iterrows():
                     col1, col2 = st.columns([6, 1])
                     with col1:
@@ -1032,11 +1401,6 @@ class UIComponents:
                     with col2:
                         if st.button("Delete", key=f"sid_del_{sid_row['SID_ID']}"):
                             try:
-                                # Clear primary if deleting current primary
-                                current_primary = self.db.get_primary_sid(order_id)
-                                if current_primary == sid_row["SID_NUMBER"]:
-                                    self.db.set_primary_sid(order_id, None)
-
                                 self.db.delete_sid(sid_row["SID_ID"])
                                 st.success("SID deleted!")
                                 self.logger.log_info(f"Deleted SID {sid_row['SID_ID']} from order {order_id}")
@@ -1045,45 +1409,13 @@ class UIComponents:
                                 self.logger.log_error(f"Failed to delete SID {sid_row['SID_ID']}", e)
                                 st.error("Failed to delete SID")
 
+            # If no SIDs at all
+            if not primary_sid and sid_df.empty:
+                st.write("— none —")
+
         except Exception as e:
             self.logger.log_error(f"Error displaying SIDs for order {order_id}", e)
             st.warning("Could not load SIDs")
-
-    def _render_primary_sid_selector(self, order_id: str):
-        """Render primary SID selector"""
-        try:
-            sid_df = self.db.get_sids_for_order(order_id)
-            sid_options = ["(none)"] + (sid_df["SID_NUMBER"].tolist() if not sid_df.empty else [])
-
-            current_primary = self.db.get_primary_sid(order_id)
-
-            # Determine index
-            if not current_primary or current_primary not in sid_options:
-                default_idx = 0
-            else:
-                default_idx = sid_options.index(current_primary)
-
-            selected = st.selectbox(
-                "Primary SID",
-                sid_options,
-                index=default_idx,
-                key=f"prim_{order_id}"
-            )
-
-            if st.button("Save Primary SID", key=f"prim_save_{order_id}"):
-                try:
-                    new_primary = None if selected == "(none)" else selected
-                    self.db.set_primary_sid(order_id, new_primary)
-                    st.success("Primary SID updated!")
-                    self.logger.log_info(f"Updated primary SID for order {order_id} to {new_primary}")
-                    st.rerun()
-                except Exception as e:
-                    self.logger.log_error(f"Failed to update primary SID for order {order_id}", e)
-                    st.error("Failed to update primary SID")
-
-        except Exception as e:
-            self.logger.log_error(f"Error rendering primary SID selector for order {order_id}", e)
-            st.warning("Could not load primary SID selector")
 
     def _render_sid_editor(self, order_id: str):
         """Render SID editor panel - FIXED: No more typo errors!"""
@@ -1129,13 +1461,6 @@ class UIComponents:
                 if st.button("Save SIDs", key=f"sids_save_{order_id}"):
                     try:
                         added_count = self.db.add_multiple_sids(order_id, sid_rows)
-
-                        # Auto-set primary if none exists
-                        current_primary = self.db.get_primary_sid(order_id)
-                        if not current_primary:
-                            sids = self.db.get_sids_for_order(order_id)
-                            if not sids.empty:
-                                self.db.set_primary_sid(order_id, sids.iloc[0]["SID_NUMBER"])
 
                         # Close panel and clear state
                         self.session.clear_sid_editor(order_id)
@@ -1288,14 +1613,35 @@ class UIComponents:
                 st.info("No stops added yet.")
                 return
 
-            # Display stops table (hide DROP_NO)
-            display_df = stops.rename(columns={
-                "STOP_ORDER": "Stop Order",
-                "CODE_DESTINATION": "Code Destination",
-                "SHIPVIA": "Ship Via"
-            }).drop(columns=["DROP_NO"]).reset_index(drop=True)
+            # Display stops table with inline edit buttons
+            st.markdown("**Stops Table:**")
 
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            # Render each stop row with edit button
+            for _, stop_row in stops.iterrows():
+                drop_no = stop_row["DROP_NO"]
+
+                # Row with Edit button and stop info
+                col_edit, col_order, col_dest, col_via = st.columns([0.5, 1, 2, 2])
+
+                with col_edit:
+                    if st.button("✏️", key=f"edit_stop_btn_{drop_no}"):
+                        self.session.start_editing_stop(drop_no)
+                        st.rerun()
+
+                with col_order:
+                    st.write(f"**{int(stop_row['STOP_ORDER'])}**")
+
+                with col_dest:
+                    st.write(stop_row['CODE_DESTINATION'] or 'N/A')
+
+                with col_via:
+                    st.write(stop_row['SHIPVIA'] or 'N/A')
+
+                # Show edit form if editing this stop
+                if self.session.is_editing_stop(drop_no):
+                    self._render_stop_edit_form(drop_no, stop_row)
+
+            st.markdown("---")
 
             # Expandable details for each stop
             for _, stop_row in stops.iterrows():
