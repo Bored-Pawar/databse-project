@@ -61,12 +61,22 @@ class SessionManager:
     # Stop management
     def get_current_stop(self) -> str:
         return self.get("current_stop_drop_no")
-    
+
     def set_current_stop(self, drop_no: str):
         self.set("current_stop_drop_no", drop_no)
-    
+
     def clear_current_stop(self):
         self.set("current_stop_drop_no", None)
+
+    # Selected stop management (for dropdown-based stop selection)
+    def get_selected_stop(self) -> str:
+        return self.get("selected_stop_drop_no")
+
+    def set_selected_stop(self, drop_no: str):
+        self.set("selected_stop_drop_no", drop_no)
+
+    def clear_selected_stop(self):
+        self.set("selected_stop_drop_no", None)
     
     # Panel toggles (for SID and OSD editors)
     def is_panel_open(self, panel_id: str) -> bool:

@@ -45,26 +45,30 @@ class UIComponents:
         """Render the create/edit manifest interface"""
         try:
             st.header("➕ Create Manifest")
-            
+
             # Manifest creation form
             self._render_manifest_form()
-            
+
             # Show manifest info if one is active
             manifest_info = self.session.get_manifest_info()
             if manifest_info:
                 self._render_manifest_summary(manifest_info)
-                
+
                 # Stop management
                 self._render_stop_form()
-                
-                # Shipment management for current stop
-                current_stop = self.session.get_current_stop()
-                if current_stop:
-                    self._render_shipment_section(current_stop)
-                
+
+                # Stop selector dropdown and working stop section
+                self._render_stop_selector()
+
+                # Shipment management for selected stop
+                selected_stop = self.session.get_selected_stop()
+                if selected_stop:
+                    self._render_working_stop_header(selected_stop)
+                    self._render_shipment_section(selected_stop)
+
                 # All stops overview
                 self._render_stops_overview()
-        
+
         except Exception as e:
             self.logger.log_error("Error in render_create_mode", e)
             st.error("An error occurred. Please check the logs.")
@@ -173,38 +177,133 @@ class UIComponents:
                 
                 drop_no = self.db.insert_stop(manifest_no, stop_order, code_destination, shipvia)
                 self.session.set_current_stop(drop_no)
-                
+                # Automatically select the newly added stop for editing
+                self.session.set_selected_stop(drop_no)
+
                 st.success(f"Stop added successfully! (DROP_NO: {drop_no})")
                 self.logger.log_info(f"Added stop {drop_no} to manifest {manifest_no}")
                 st.rerun()
-            
+
             except Exception as e:
                 self.logger.log_error("Failed to add stop", e)
                 st.error(f"Failed to add stop: {e}")
-    
-    # ==================== Shipment Section ====================
-    
-    def _render_shipment_section(self, drop_no: str):
-        """Render shipment management for current stop"""
+
+    def _render_stop_selector(self):
+        """Render dropdown to select which stop to work on"""
         try:
+            manifest_no = self.session.get_current_manifest()
+            if not manifest_no:
+                return
+
+            stops = self.db.get_stops_for_manifest(manifest_no)
+
+            if stops.empty:
+                return
+
             st.divider()
-            st.subheader("➕ Add Shipment to Current Stop")
-            
+            st.subheader("🎯 Select Stop to Work On")
+
+            # Create dropdown options: "Stop 1 • CODE_DEST • SHIPVIA (DROP_NO)"
+            stop_options = {}
+            for _, stop_row in stops.iterrows():
+                drop_no = stop_row["DROP_NO"]
+                stop_order = int(stop_row['STOP_ORDER'])
+                code_dest = stop_row['CODE_DESTINATION'] or 'N/A'
+                shipvia = stop_row['SHIPVIA'] or 'N/A'
+
+                label = f"Stop {stop_order} • {code_dest} • {shipvia} ({drop_no})"
+                stop_options[label] = drop_no
+
+            # Get current selection
+            current_selected = self.session.get_selected_stop()
+
+            # Find the index of current selection
+            default_index = 0
+            if current_selected:
+                for idx, drop_no in enumerate(stop_options.values()):
+                    if drop_no == current_selected:
+                        default_index = idx
+                        break
+
+            col1, col2 = st.columns([4, 1])
+
+            with col1:
+                selected_label = st.selectbox(
+                    "Choose a stop to add/edit shipments:",
+                    options=list(stop_options.keys()),
+                    index=default_index,
+                    key="stop_selector"
+                )
+
+            with col2:
+                if st.button("Select Stop", type="primary"):
+                    selected_drop_no = stop_options[selected_label]
+                    self.session.set_selected_stop(selected_drop_no)
+                    self.logger.log_info(f"Selected stop {selected_drop_no} for editing")
+                    st.rerun()
+
+        except Exception as e:
+            self.logger.log_error("Error in stop selector", e)
+            st.error("Error loading stop selector")
+
+    def _render_working_stop_header(self, drop_no: str):
+        """Render header showing which stop we're currently working on"""
+        try:
+            manifest_no = self.session.get_current_manifest()
+            if not manifest_no:
+                return
+
+            stops = self.db.get_stops_for_manifest(manifest_no)
+            stop_row = stops[stops["DROP_NO"] == drop_no]
+
+            if stop_row.empty:
+                return
+
+            stop_info = stop_row.iloc[0]
+
+            st.divider()
+
+            # Header similar to manifest summary
+            col_title, col_btn = st.columns([4, 1])
+            with col_title:
+                st.subheader("🚚 Working on Stop")
+            with col_btn:
+                if st.button("❌ Clear Selection", key="clear_stop_selection"):
+                    self.session.clear_selected_stop()
+                    self.logger.log_info(f"Cleared stop selection")
+                    st.rerun()
+
+            # Display stop info
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.write(f"**Stop Order:** {int(stop_info['STOP_ORDER'])}")
+                st.write(f"**DROP_NO:** {drop_no}")
+
+            with col2:
+                st.write(f"**Code Destination:** {stop_info['CODE_DESTINATION'] or 'N/A'}")
+
+            with col3:
+                st.write(f"**Ship Via:** {stop_info['SHIPVIA'] or 'N/A'}")
+
+        except Exception as e:
+            self.logger.log_error(f"Error rendering working stop header for {drop_no}", e)
+            st.error("Error displaying stop information")
+
+    # ==================== Shipment Section ====================
+
+    def _render_shipment_section(self, drop_no: str):
+        """Render shipment management for selected stop"""
+        try:
             # Show existing shipments
             self._display_shipments_table(drop_no)
-            
+
             # Shipment entry form
             self._render_shipment_form(drop_no)
-            
+
             # Manage existing shipments
             self._render_shipment_management(drop_no)
-            
-            # Finish stop button
-            if st.button("✅ Finish this Stop & Add Another", type="secondary"):
-                self.session.clear_current_stop()
-                self.logger.log_info(f"Finished working on stop {drop_no}")
-                st.rerun()
-        
+
         except Exception as e:
             self.logger.log_error(f"Error in shipment section for drop {drop_no}", e)
             st.error("Error rendering shipment section. Check logs.")
